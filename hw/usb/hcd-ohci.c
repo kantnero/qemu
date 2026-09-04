@@ -28,12 +28,12 @@
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
 #include "qapi/error.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/usb/usb.h"
 #include "migration/vmstate.h"
 #include "hw/core/sysbus.h"
-#include "hw/core/qdev-dma.h"
 #include "hw/core/qdev-properties.h"
 #include "trace.h"
 #include "hcd-ohci.h"
@@ -1129,6 +1129,8 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
         return 0;
     }
     for (cur = head; cur && link_cnt++ < ED_LINK_LIMIT; cur = next_ed) {
+        unsigned int ed_cnt = 0;
+
         if (ohci_read_ed(ohci, cur, &ed)) {
             trace_usb_ohci_ed_read_error(cur);
             ohci_die(ohci);
@@ -1171,6 +1173,13 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
                 if (ohci_service_iso_td(ohci, &ed)) {
                     break;
                 }
+            }
+
+            if (ed_cnt++ > ED_LINK_LIMIT) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "ohci: Too many endpoint descriptors in loop\n");
+                ohci_die(ohci);
+                return 0;
             }
         }
 

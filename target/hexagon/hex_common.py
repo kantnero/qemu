@@ -253,6 +253,8 @@ def need_env(tag):
             "A_LOAD" in attribdict[tag] or
             "A_CVI_GATHER" in attribdict[tag] or
             "A_CVI_SCATTER" in attribdict[tag] or
+            "A_HVX_IEEE_FP" in attribdict[tag] or
+            "A_HVX_FLT" in attribdict[tag] or
             "A_IMPLICIT_WRITES_USR" in attribdict[tag] or
             "A_PRIV" in attribdict[tag] or
             "J2_trap" in tag)
@@ -388,6 +390,8 @@ class Register:
         """))
     def idef_arg(self, declared):
         declared.append(self.reg_tcg())
+    def may_alias_gpr(self):
+        return False
     def helper_arg(self):
         return HelperArg(
             self.helper_proto_type(),
@@ -495,6 +499,8 @@ class ReadWrite:
         return False
 
 class GprDest(Register, Single, Dest):
+    def may_alias_gpr(self):
+        return True
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
         f.write(code_fmt(f"""\
@@ -510,6 +516,8 @@ class GprDest(Register, Single, Dest):
         """))
 
 class GprSource(Register, Single, OldSource):
+    def may_alias_gpr(self):
+        return True
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
         f.write(code_fmt(f"""\
@@ -531,6 +539,8 @@ class GprNewSource(Register, Single, NewSource):
         """))
 
 class GprReadWrite(Register, Single, ReadWrite):
+    def may_alias_gpr(self):
+        return True
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
         f.write(code_fmt(f"""\
@@ -557,6 +567,8 @@ class GprReadWrite(Register, Single, ReadWrite):
         """))
 
 class ControlDest(Register, Single, Dest):
+    def may_alias_gpr(self):
+        return True
     def decl_reg_num(self, f, regno):
         f.write(code_fmt(f"""\
             const int {self.reg_num} = insn->regno[{regno}]  + HEX_REG_SA0;
@@ -593,6 +605,8 @@ class ControlSource(Register, Single, OldSource):
         """))
 
 class ModifierSource(Register, Single, OldSource):
+    def may_alias_gpr(self):
+        return True
     def decl_reg_num(self, f, regno):
         f.write(code_fmt(f"""\
             const int {self.reg_num} = insn->regno[{regno}] + HEX_REG_M0;
@@ -772,6 +786,11 @@ class VRegDest(Register, Hvx, Dest):
                 TCGv_ptr {self.reg_tcg()} = tcg_temp_new_ptr();
                 tcg_gen_addi_ptr({self.reg_tcg()}, tcg_env, {self.hvx_off()});
             """))
+    def gen_zero(self, f):
+        f.write(code_fmt(f"""\
+                tcg_gen_gvec_dup_imm(MO_64, {self.hvx_off()},
+                    sizeof(MMVector), sizeof(MMVector), 0);
+            """))
     def gen_write(self, f, tag):
         pass
     def helper_hvx_desc(self, f):
@@ -838,6 +857,11 @@ class VRegReadWrite(Register, Hvx, ReadWrite):
                 TCGv_ptr {self.reg_tcg()} = tcg_temp_new_ptr();
                 tcg_gen_addi_ptr({self.reg_tcg()}, tcg_env, {self.hvx_off()});
             """))
+    def gen_zero(self, f):
+        f.write(code_fmt(f"""\
+                tcg_gen_gvec_dup_imm(MO_64, {self.hvx_off()},
+                    sizeof(MMVector), sizeof(MMVector), 0);
+            """))
     def gen_write(self, f, tag):
         pass
     def helper_hvx_desc(self, f):
@@ -869,6 +893,11 @@ class VRegTmp(Register, Hvx, ReadWrite):
                 tcg_gen_gvec_mov(MO_64, {self.hvx_off()},
                                  vreg_src_off(ctx, {self.reg_num}),
                                  sizeof(MMVector), sizeof(MMVector));
+            """))
+    def gen_zero(self, f):
+        f.write(code_fmt(f"""\
+                tcg_gen_gvec_dup_imm(MO_64, {self.hvx_off()},
+                    sizeof(MMVector), sizeof(MMVector), 0);
             """))
     def gen_write(self, f, tag):
         f.write(code_fmt(f"""\
@@ -903,6 +932,11 @@ class VRegPairDest(Register, Hvx, Dest):
                 TCGv_ptr {self.reg_tcg()} = tcg_temp_new_ptr();
                 tcg_gen_addi_ptr({self.reg_tcg()}, tcg_env, {self.hvx_off()});
             """))
+    def gen_zero(self, f):
+        f.write(code_fmt(f"""\
+            tcg_gen_gvec_dup_imm(MO_64, {self.hvx_off()},
+                sizeof(MMVectorPair), sizeof(MMVectorPair), 0);
+        """))
     def gen_write(self, f, tag):
         pass
     def helper_hvx_desc(self, f):
@@ -962,6 +996,11 @@ class VRegPairReadWrite(Register, Hvx, ReadWrite):
                 TCGv_ptr {self.reg_tcg()} = tcg_temp_new_ptr();
                 tcg_gen_addi_ptr({self.reg_tcg()}, tcg_env, {self.hvx_off()});
             """))
+    def gen_zero(self, f):
+        f.write(code_fmt(f"""\
+            tcg_gen_gvec_dup_imm(MO_64, {self.hvx_off()},
+                sizeof(MMVectorPair), sizeof(MMVectorPair), 0);
+        """))
     def gen_write(self, f, tag):
         f.write(code_fmt(f"""\
             gen_vreg_write_pair(ctx, {self.hvx_off()}, {self.reg_num},
@@ -1058,11 +1097,24 @@ class QRegReadWrite(Register, Hvx, ReadWrite):
         """))
 
 class GuestRegister(Register):
-    pass
+    def gen_check_impl(self, f, regno):
+        if self.is_written():
+            f.write(code_fmt(f"""\
+                if (!greg_writable(insn->regno[{regno}],
+                    {str(self.is_pair()).lower()})) {{
+                    return;
+                }}
+            """))
+        else:
+            f.write(code_fmt(f"""\
+                check_greg_impl(insn->regno[{regno}],
+                                {str(self.is_pair()).lower()});
+            """))
 
 class GuestDest(GuestRegister, Single, Dest):
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
+        self.gen_check_impl(f, regno)
         f.write(code_fmt(f"""\
             TCGv_i32 {self.reg_tcg()} = tcg_temp_new_i32();
         """))
@@ -1082,6 +1134,7 @@ class GuestSource(GuestRegister, Single, OldSource):
         """))
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
+        self.gen_check_impl(f, regno)
         f.write(code_fmt(f"""\
             TCGv_i32 {self.reg_tcg()} = tcg_temp_new_i32();
             gen_read_greg({self.reg_tcg()}, {self.reg_num});
@@ -1092,6 +1145,7 @@ class GuestSource(GuestRegister, Single, OldSource):
 class GuestPairDest(GuestRegister, Pair, Dest):
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
+        self.gen_check_impl(f, regno)
         f.write(code_fmt(f"""\
             TCGv_i64 {self.reg_tcg()} = tcg_temp_new_i64();
         """))
@@ -1111,6 +1165,7 @@ class GuestPairSource(GuestRegister, Pair, OldSource):
         """))
     def decl_tcg(self, f, tag, regno):
         self.decl_reg_num(f, regno)
+        self.gen_check_impl(f, regno)
         f.write(code_fmt(f"""\
             TCGv_i64 {self.reg_tcg()} = tcg_temp_new_i64();
             gen_read_greg_pair({self.reg_tcg()}, {self.reg_num});

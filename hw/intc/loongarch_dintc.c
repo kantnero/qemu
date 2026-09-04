@@ -19,6 +19,7 @@
 #include "target/loongarch/cpu.h"
 #include "qemu/error-report.h"
 #include "system/hw_accel.h"
+#include "qemu/log.h"
 
 /* msg addr field */
 FIELD(MSG_ADDR, IRQ_NUM, 4, 8)
@@ -52,8 +53,29 @@ static void loongarch_dintc_mem_write(void *opaque, hwaddr addr,
     CPUState *cs;
 
     cpu_num = FIELD_EX64(msg_addr, MSG_ADDR, CPU_NUM);
+
+    /* Validate cpu_num against the configured number of CPUs */
+    if (cpu_num >= s->num_cpu) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "loongarch-dintc: invalid cpu number%d\n", cpu_num);
+        return;
+    }
     cs = cpu_by_arch_id(cpu_num);
+    if (!cs) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "loongarch-dintc: no CPU for arch_id %d\n", cpu_num);
+        return;
+    }
     irq_num = FIELD_EX64(msg_addr, MSG_ADDR, IRQ_NUM);
+
+    if (kvm_irqchip_in_kernel()) {
+        MSIMessage msg;
+
+        msg.address = msg_addr;
+        msg.data = val;
+        kvm_irqchip_send_msi(kvm_state, msg);
+        return;
+    }
 
     async_run_on_cpu(cs, do_set_vcpu_dintc_irq,
                          RUN_ON_CPU_HOST_INT(irq_num));
@@ -95,6 +117,10 @@ static void loongarch_dintc_realize(DeviceState *dev, Error **errp)
         s->cpu[i].arch_id = id_list->cpus[i].arch_id;
         s->cpu[i].cpu = CPU(id_list->cpus[i].cpu);
         qdev_init_gpio_out(dev, &s->cpu[i].parent_irq, 1);
+    }
+
+    if (kvm_irqchip_in_kernel()) {
+        kvm_dintc_realize(dev, errp);
     }
 
     return;

@@ -40,14 +40,23 @@
 #include "qemu/audio.h"
 #include "hw/arm/smmuv3.h"
 
+GlobalProperty hw_compat_11_1[] = {
+    { "sysbus-ehci-usb", "x-migrate-fetch-addr-64bit", "off" },
+    { "pci-ehci-usb", "x-migrate-fetch-addr-64bit", "off" },
+};
+const size_t hw_compat_11_1_len = G_N_ELEMENTS(hw_compat_11_1);
+
 GlobalProperty hw_compat_11_0[] = {
+    { "virtio-mmio", VIRTIO_QUEUE_SIZE_OVERRIDE, "1024" },
     { "chardev-vc", "encoding", "cp437" },
     { "tpm-crb", "cap-chunk", "off" },
     { "tpm-crb", "x-allow-chunk-migration", "off" },
+    { "tpm-tis-device", "ppi", "off" },
     { TYPE_ARM_SMMUV3, "ats", "off" },
     { TYPE_ARM_SMMUV3, "ril", "on" },
     { TYPE_ARM_SMMUV3, "ssidsize", "0" },
     { TYPE_ARM_SMMUV3, "oas", "44" },
+    { "migration", "switchover-ack-legacy", "on" },
 };
 const size_t hw_compat_11_0_len = G_N_ELEMENTS(hw_compat_11_0);
 
@@ -1305,6 +1314,7 @@ static void machine_finalize(Object *obj)
     g_free(ms->nvdimms_state);
     g_free(ms->numa_state);
     g_free(ms->audiodev);
+    g_free(ms->fdt);
 }
 
 bool machine_usb(MachineState *machine)

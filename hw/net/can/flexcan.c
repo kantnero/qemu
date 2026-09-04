@@ -106,7 +106,11 @@ static const FlexcanRegs flexcan_regs_write_mask = {
     .gfwr_mx6 = 0xFFFFFFFF,
     ._reserved6 = {0},
     ._reserved8 = {0},
-    .rx_smb0_raw = {0, 0, 0, 0},
+    .rx_smb0 = {
+        .can_ctrl = 0,
+        .can_id = 0,
+        .data = { 0, 0 },
+    },
     .rx_smb1 = {0, 0, 0, 0},
 };
 static const FlexcanRegs flexcan_regs_reset_mask = {
@@ -134,14 +138,22 @@ static const FlexcanRegs flexcan_regs_reset_mask = {
     ._reserved2 = 0,
     .dbg1 = 0,
     .dbg2 = 0,
-    .mb = {0xFFFFFFFF},
+    .mbs = { [0 ... FLEXCAN_MAILBOX_COUNT - 1] = {
+        .can_ctrl = 0xFFFFFFFF,
+        .can_id = 0xFFFFFFFF,
+        .data = { 0xFFFFFFFF, 0xFFFFFFFF },
+    } },
     ._reserved4 = {0},
-    .rximr = {0xFFFFFFFF},
+    .rximr = { [0 ... 63] = 0xFFFFFFFF },
     ._reserved5 = {0},
     .gfwr_mx6 = 0,
     ._reserved6 = {0},
     ._reserved8 = {0},
-    .rx_smb0_raw = {0, 0, 0, 0},
+    .rx_smb0 = {
+        .can_ctrl = 0,
+        .can_id = 0,
+        .data = { 0, 0 },
+    },
     .rx_smb1 = {0, 0, 0, 0},
 };
 
@@ -332,8 +344,6 @@ static uint32_t flexcan_get_bitrate(FlexcanState *s)
     uint32_t total_qpb = 1 + tseg1 + tseg2;
 
     uint32_t pe_freq, s_freq, bitrate;
-
-    assert(s->ccm);
 
     /* s_freq: CAN clock from CCM divided by the prescaler */
     pe_freq = imx_ccm_get_clock_frequency(s->ccm, CLK_CAN);
@@ -881,22 +891,22 @@ static bool flexcan_can_receive(CanBusClientState *client)
  */
 static void flexcan_fifo_pop(FlexcanState *s)
 {
-    if (s->regs.fifo.mb_back.can_ctrl != 0) {
+    if (s->regs.mbs[0].can_ctrl != 0) {
         /* move queue elements forward */
-        memmove(&s->regs.fifo.mb_back, &s->regs.fifo.mbs_queue[0],
-                sizeof(s->regs.fifo.mbs_queue));
+        memmove(&s->regs.mbs[0], &s->regs.mbs[1],
+                sizeof(s->regs.mbs[0]) * (FLEXCAN_FIFO_DEPTH - 1));
 
         /* clear the first-in slot */
         memset(&s->regs.mbs[FLEXCAN_FIFO_DEPTH - 1], 0,
                sizeof(FlexcanRegsMessageBuffer));
 
         trace_flexcan_fifo_pop(DEVICE(s)->canonical_path, 1,
-                               s->regs.fifo.mb_back.can_ctrl != 0);
+                               s->regs.mbs[0].can_ctrl != 0);
     } else {
         trace_flexcan_fifo_pop(DEVICE(s)->canonical_path, 0, 0);
     }
 
-    if (s->regs.fifo.mb_back.can_ctrl != 0) {
+    if (s->regs.mbs[0].can_ctrl != 0) {
         flexcan_irq_iflag_set(s, I_FIFO_AVAILABLE);
     } else {
         flexcan_irq_iflag_clear(s, I_FIFO_AVAILABLE);
@@ -1077,7 +1087,7 @@ static enum FlexcanRx flexcan_mb_rx(FlexcanState *s, const qemu_can_frame *buf)
         }
     }
 
-    if (last_not_free_to_receive_mbid >= -1) {
+    if (last_not_free_to_receive_mbid >= 0) {
         if (last_not_free_to_receive_locked) {
             /*
              * copy to temporary mailbox (SMB)
@@ -1153,6 +1163,8 @@ static void flexcan_mem_write(void *opaque, hwaddr addr, uint64_t val,
                               unsigned size)
 {
     FlexcanState *s = opaque;
+    const int mbid = (addr - offsetof(FlexcanRegs, mbs)) /
+        sizeof(s->regs.mbs[0]);
     uint32_t write_mask = ((const uint32_t *)
         &flexcan_regs_write_mask)[addr / 4];
     uint32_t old_value = s->regs_raw[addr / 4];
@@ -1210,11 +1222,8 @@ static void flexcan_mem_write(void *opaque, hwaddr addr, uint64_t val,
     default:
         s->regs_raw[addr / 4] = (val & write_mask) | (old_value & ~write_mask);
 
-        if (addr >= offsetof(FlexcanRegs, mb) &&
-            addr < offsetof(FlexcanRegs, _reserved4)) {
+        if (0 <= mbid && mbid < ARRAY_SIZE(s->regs.mbs)) {
             /* access to mailbox */
-            int mbid = (addr - offsetof(FlexcanRegs, mb)) /
-                            sizeof(FlexcanRegsMessageBuffer);
 
             if (s->locked_mbidx == mbid) {
                 flexcan_mb_unlock(s);
@@ -1242,14 +1251,12 @@ static void flexcan_mem_write(void *opaque, hwaddr addr, uint64_t val,
 static uint64_t flexcan_mem_read(void *opqaue, hwaddr addr, unsigned size)
 {
     FlexcanState *s = opqaue;
+    const int mbid = (addr - offsetof(FlexcanRegs, mbs)) /
+        sizeof(s->regs.mbs[0]);
     uint32_t rv = s->regs_raw[addr >> 2];
 
-    if (addr >= offsetof(FlexcanRegs, mb) &&
-        addr < offsetof(FlexcanRegs, _reserved4)) {
+    if (0 <= mbid && mbid < ARRAY_SIZE(s->regs.mbs)) {
         /* reading from mailbox */
-        hwaddr offset = addr - offsetof(FlexcanRegs, mb);
-        int mbid = offset / sizeof(FlexcanRegsMessageBuffer);
-
         if (addr % 16 == 0 && s->locked_mbidx != mbid) {
             /* reading control word locks the mailbox */
             flexcan_mb_unlock(s);
@@ -1292,13 +1299,30 @@ static bool flexcan_mem_accepts(void *opaque, hwaddr addr,
     return true;
 }
 
-static const struct MemoryRegionOps flexcan_ops = {
+static const struct MemoryRegionOps flexcan2_ops = {
     .read = flexcan_mem_read,
     .write = flexcan_mem_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 1,
         .max_access_size = 4,
+        .unaligned = true,
+        .accepts = flexcan_mem_accepts
+    },
+    .impl = {
+        .min_access_size = 4,
+        .max_access_size = 4,
+        .unaligned = false
+    },
+};
+
+static const struct MemoryRegionOps flexcan3_ops = {
+    .read = flexcan_mem_read,
+    .write = flexcan_mem_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
         .unaligned = true,
         .accepts = flexcan_mem_accepts
     },
@@ -1324,13 +1348,23 @@ static int flexcan_connect_to_bus(FlexcanState *s, CanBusState *bus)
     return 0;
 }
 
-static void flexcan_init(Object *obj)
+static void flexcan2_init(Object *obj)
 {
     FlexcanState *s = CAN_FLEXCAN(obj);
 
     memory_region_init_io(
-        &s->iomem, obj, &flexcan_ops, s, TYPE_CAN_FLEXCAN,
+        &s->iomem, obj, &flexcan2_ops, s, TYPE_CAN_FLEXCAN2,
         offsetof(FlexcanRegs, _reserved6)
+    );
+}
+
+static void flexcan3_init(Object *obj)
+{
+    FlexcanState *s = CAN_FLEXCAN(obj);
+
+    memory_region_init_io(
+        &s->iomem, obj, &flexcan3_ops, s, TYPE_CAN_FLEXCAN3,
+        sizeof(FlexcanRegs)
     );
 }
 
@@ -1344,6 +1378,12 @@ static void flexcan_realize(DeviceState *dev, Error **errp)
                        dev->canonical_path);
             return;
         }
+    }
+
+    if (!s->ccm) {
+        error_setg(errp, "%s 'clock-control-module' link property not set",
+                   dev->canonical_path);
+        return;
     }
 
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->iomem);
@@ -1366,6 +1406,8 @@ static const VMStateDescription vmstate_can = {
 static const Property flexcan_properties[] = {
     DEFINE_PROP_LINK("canbus", FlexcanState, canbus, TYPE_CAN_BUS,
                      CanBusState *),
+    DEFINE_PROP_LINK("clock-control-module", FlexcanState, ccm, TYPE_IMX_CCM,
+                     IMXCCMState *),
 };
 
 static void flexcan_class_init(ObjectClass *klass, const void *data)
@@ -1378,19 +1420,42 @@ static void flexcan_class_init(ObjectClass *klass, const void *data)
     dc->realize = flexcan_realize;
     device_class_set_props(dc, flexcan_properties);
     dc->vmsd = &vmstate_can;
-    dc->desc = "i.MX FLEXCAN Controller";
 }
 
-static const TypeInfo flexcan_info = {
-    .name          = TYPE_CAN_FLEXCAN,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(FlexcanState),
-    .class_init    = flexcan_class_init,
-    .instance_init = flexcan_init,
+static void flexcan2_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->desc = "i.MX FlexCAN 2 Controller";
+}
+
+static void flexcan3_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->desc = "i.MX FlexCAN 3 Controller";
+}
+
+static const TypeInfo flexcan_types[] = {
+    {
+        .name          = TYPE_CAN_FLEXCAN,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(FlexcanState),
+        .class_init    = flexcan_class_init,
+        .abstract      = true,
+    },
+    {
+        .name          = TYPE_CAN_FLEXCAN2,
+        .parent        = TYPE_CAN_FLEXCAN,
+        .class_init    = flexcan2_class_init,
+        .instance_init = flexcan2_init,
+    },
+    {
+        .name          = TYPE_CAN_FLEXCAN3,
+        .parent        = TYPE_CAN_FLEXCAN,
+        .class_init    = flexcan3_class_init,
+        .instance_init = flexcan3_init,
+    },
 };
 
-static void can_register_types(void)
-{
-    type_register_static(&flexcan_info);
-}
-type_init(can_register_types)
+DEFINE_TYPES(flexcan_types)

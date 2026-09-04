@@ -14,8 +14,7 @@
 #include "hw/core/boards.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/hexagon/hexagon.h"
-#include "hw/hexagon/hexagon_globalreg.h"
-#include "hw/hexagon/hexagon_tlb.h"
+#include "hw/hexagon/hex-subsys.h"
 #include "hw/core/loader.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
@@ -27,6 +26,7 @@
 #include "target/hexagon/internal.h"
 #include "system/physmem.h"
 #include "system/reset.h"
+#include "semihosting/semihost.h"
 
 #include "machine_cfg_v66g_1024.h.inc"
 
@@ -108,9 +108,6 @@ static void hexagon_common_init(MachineState *machine, Rev_t rev,
 {
     HexagonCommonMachineState *hms = HEXAGON_COMMON_MACHINE(machine);
     HexagonDspMachineState *dms = HEXAGON_DSP_MACHINE(machine);
-    MemoryRegion *address_space;
-    DeviceState *glob_regs_dev;
-    DeviceState *tlb_dev;
 
     memset(&hexagon_binfo, 0, sizeof(hexagon_binfo));
     if (machine->kernel_filename) {
@@ -120,33 +117,15 @@ static void hexagon_common_init(MachineState *machine, Rev_t rev,
 
     machine->enable_graphics = 0;
 
-    address_space = get_system_memory();
+    hex_subsys_create(hms, m_cfg, rev);
 
-    memory_region_init_rom(&hms->cfgtable_rom, NULL, "config_table.rom",
-                           sizeof(m_cfg->cfgtable), &error_fatal);
-    memory_region_add_subregion(address_space, m_cfg->cfgbase,
-                                &hms->cfgtable_rom);
-
-    memory_region_init_ram(&hms->ram, NULL, "ddr.ram",
-                           machine->ram_size, &error_fatal);
-    memory_region_add_subregion(address_space, 0x0, &hms->ram);
-
-    glob_regs_dev = qdev_new(TYPE_HEXAGON_GLOBALREG);
-    object_property_add_child(OBJECT(machine), "global-regs",
-                              OBJECT(glob_regs_dev));
-    qdev_prop_set_uint64(glob_regs_dev, "config-table-addr", m_cfg->cfgbase);
-    qdev_prop_set_uint32(glob_regs_dev, "dsp-rev", rev);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(glob_regs_dev), &error_fatal);
-
-    tlb_dev = qdev_new(TYPE_HEXAGON_TLB);
-    object_property_add_child(OBJECT(machine), "tlb", OBJECT(tlb_dev));
-    qdev_prop_set_uint32(tlb_dev, "num-entries",
-                         m_cfg->cfgtable.jtlb_size_entries);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(tlb_dev), &error_fatal);
+    g_autofree HexagonCPU **cpus = g_new(HexagonCPU *, machine->smp.cpus);
 
     for (int i = 0; i < machine->smp.cpus; i++) {
         HexagonCPU *cpu = HEXAGON_CPU(object_new(machine->cpu_type));
         qemu_register_reset(do_cpu_reset, cpu);
+
+        qdev_prop_set_uint32(DEVICE(cpu), "htid", i);
 
         /*
          * CPU #0 is the only CPU running at boot, others must be
@@ -156,16 +135,15 @@ static void hexagon_common_init(MachineState *machine, Rev_t rev,
         if (i == 0) {
             hexagon_init_bootstrap(dms, cpu);
         }
-        object_property_set_link(OBJECT(cpu), "global-regs",
-                                 OBJECT(glob_regs_dev), &error_fatal);
-        object_property_set_link(OBJECT(cpu), "tlb",
-                                 OBJECT(tlb_dev), &error_fatal);
-        qdev_realize_and_unref(DEVICE(cpu), NULL, &error_fatal);
+        hex_subsys_add_cpu(hms, DEVICE(cpu));
+        cpus[i] = cpu;
     }
 
-    rom_add_blob_fixed_as("config_table.rom", &m_cfg->cfgtable,
-                          sizeof(m_cfg->cfgtable), m_cfg->cfgbase,
-                          &address_space_memory);
+    hex_subsys_realize_cluster(hms);
+
+    for (int i = 0; i < machine->smp.cpus; i++) {
+        hex_subsys_realize_cpu(hms, DEVICE(cpus[i]), (i == 0));
+    }
 }
 
 static void init_mc(MachineClass *mc)
@@ -178,6 +156,7 @@ static void init_mc(MachineClass *mc)
     mc->no_serial = 1;
     mc->is_default = false;
     mc->max_cpus = 8;
+    qemu_semihosting_enable();
 }
 
 /* ----------------------------------------------------------------- */

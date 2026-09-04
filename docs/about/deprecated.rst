@@ -61,6 +61,16 @@ The ``debug-threads`` option of the ``-name`` argument is now
 ignored. Thread naming is unconditionally enabled for all platforms
 where it is supported.
 
+``-mon`` option (since 11.1)
+''''''''''''''''''''''''''''
+
+The ``-mon`` option was the generic mechanism for creating monitor
+objects if the convenience ``-qmp`` or ``-monitor`` options were not
+flexible enough. The monitor objects have been converted to QOM, so
+``-mon mode=readline`` is replaced by ``-object monitor-hmp`` and
+``-mon mode=control`` is replaced by ``-object monitor-qmp``. The
+short convenience options are not deprecated, only ``-mon``.
+
 QEMU Machine Protocol (QMP) commands
 ------------------------------------
 
@@ -206,24 +216,6 @@ in the QEMU object model anymore. ``Sun-UltraSparc-IIIi+`` and
 but for consistency these will get removed in a future release, too.
 Use ``Sun-UltraSparc-IIIi-plus`` and ``Sun-UltraSparc-IV-plus`` instead.
 
-PPC 405 CPUs (since 10.0)
-'''''''''''''''''''''''''
-
-The PPC 405 CPU has no known users and the ``ref405ep`` machine was
-removed in QEMU 10.0. Since the IBM POWER [8-11] processors uses an
-embedded 405 for power management (OCC) and other internal tasks, it
-is theoretically possible to use QEMU to model them. Let's keep the
-CPU implementation for a while before removing all support.
-
-Power8E and Power8NVL CPUs and corresponding Pnv chips (since 10.1)
-'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
-
-The Power8E and Power8NVL variants of Power8 are not really useful anymore
-in qemu, and are old and unmaintained now.
-
-The CPUs as well as corresponding Power8NVL and Power8E PnvChips will also
-be considered deprecated.
-
 System emulator machines
 ------------------------
 
@@ -283,6 +275,24 @@ file is deprecated and will be removed with no replacement in a
 future release. Where no 'dh-params.pem' file is provided, the DH
 parameters will be automatically negotiated in accordance with
 RFC7919.
+
+Devices
+-------
+
+``virtio-crypto`` and cryptodev backends (since 11.2)
+'''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+The ``virtio-crypto`` device emulation is quite complex code with a
+number of known flaws. It has never been migratable, so it is
+unlikely to be used in any serious virtualization setting. Modern
+ISAs provide on-CPU cryptography instructions (e.g. AES-NI/VAES,
+armv8 crypto extensions), and the Linux kernel deprecated AF_ALG
+and dropped its off-CPU accelerator support in Linux 7.2, removing
+the primary userspace path for off-CPU crypto acceleration. The
+time for this sort of off-load has passed.
+
+As this is the only device that uses the cryptodev backends these will
+be removed at the same time the ``virtio-crypto`` device is.
 
 Device options
 --------------

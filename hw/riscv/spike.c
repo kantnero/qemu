@@ -34,7 +34,6 @@
 #include "hw/riscv/boot.h"
 #include "hw/riscv/fdt-common.h"
 #include "hw/riscv/numa.h"
-#include "hw/riscv/machines-qom.h"
 #include "hw/char/riscv_htif.h"
 #include "hw/intc/riscv_aclint.h"
 #include "chardev/char.h"
@@ -278,8 +277,9 @@ static void spike_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "signature", NULL, spike_set_signature);
     object_class_property_set_description(oc, "signature",
                                           "File to write ACT test signature");
-    object_class_property_add_uint8_ptr(oc, "signature-granularity",
-                                        &line_size, OBJ_PROP_FLAG_WRITE);
+    object_class_static_property_add_uint8_ptr(oc, "signature-granularity",
+                                               &line_size,
+                                               OBJ_PROP_FLAG_WRITE);
     object_class_property_set_description(oc, "signature-granularity",
                                           "Size of each line in ACT signature "
                                           "file");
@@ -291,7 +291,6 @@ static const TypeInfo spike_machine_typeinfo = {
     .class_init = spike_machine_class_init,
     .instance_init = spike_machine_instance_init,
     .instance_size = sizeof(SpikeState),
-    .interfaces = riscv32_64_machine_interfaces,
 };
 
 static void spike_machine_init_register_types(void)

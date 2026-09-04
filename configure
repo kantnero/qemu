@@ -172,7 +172,7 @@ fi
 # some defaults, based on the host environment
 
 # default parameters
-container_engine="auto"
+container_command=""
 cpu=""
 cross_compile="no"
 cross_prefix=""
@@ -503,17 +503,16 @@ if test -n "$linux_arch" && ! test -d "$source_path/linux-headers/asm-$linux_arc
 fi
 
 check_py_version() {
-    # We require python >= 3.9.
+    # We require python >= 3.12.
     # NB: a True python conditional creates a non-zero return code (Failure)
-    "$1" -c 'import sys; sys.exit(sys.version_info < (3,9))'
+    "$1" -c 'import sys; sys.exit(sys.version_info < (3,12))'
 }
 
 first_python=
 if test -z "${PYTHON}"; then
     # A bare 'python' is traditionally python 2.x, but some distros
     # have it as python 3.x, so check in both places.
-    for binary in python3 python python3.14 python3.13 python3.12 \
-                          python3.11 python3.10 python3.9 ; do
+    for binary in python3 python python3.14 python3.13 python3.12; do
         if has "$binary"; then
             python=$(command -v "$binary")
             if check_py_version "$python"; then
@@ -734,7 +733,7 @@ for opt do
   ;;
   --disable-containers) use_containers="no"
   ;;
-  --container-engine=*) container_engine="$optarg"
+  --container-command=*) container_command="$optarg"
   ;;
   --rust-target-triple=*) rust_target_triple="$optarg"
   ;;
@@ -869,7 +868,7 @@ Advanced options (experts only):
   --enable-debug           enable common debug build options
   --cpu=CPU                Build for host CPU [$cpu]
   --disable-containers     don't use containers for cross-building
-  --container-engine=TYPE  which container engine to use [$container_engine]
+  --container-command=CMD  which container command to use [autodetect]
   --gdb=GDB-path           gdb to use for gdbstub tests [$gdb_bin]
   --wasm64-32bit-address-limit Restrict wasm64 address space to 32-bit (default
                                is to use the whole 64-bit range).
@@ -902,7 +901,7 @@ then
     # If first_python is set, there was a binary somewhere even though
     # it was not suitable.  Use it for the error message.
     if test -n "$first_python"; then
-        error_exit "Cannot use '$first_python', Python >= 3.9 is required." \
+        error_exit "Cannot use '$first_python', Python >= 3.12 is required." \
             "Use --python=/path/to/python to specify a supported Python."
     else
         error_exit "Python not found. Use --python=/path/to/python"
@@ -910,7 +909,7 @@ then
 fi
 
 if ! check_py_version "$python"; then
-  error_exit "Cannot use '$python', Python >= 3.9 is required." \
+  error_exit "Cannot use '$python', Python >= 3.12 is required." \
              "Use --python=/path/to/python to specify a supported Python." \
              "Maybe try:" \
              "  CentOS: dnf install python3.12"
@@ -1166,12 +1165,12 @@ fi
 # detect rust triple
 
 meson_version=$($meson --version)
-if test "$rust" != disabled && ! version_ge "$meson_version" 1.10.0; then
+if test "$rust" != disabled && ! version_ge "$meson_version" 1.12.0; then
   if test "$rust" = enabled; then
     $mkvenv ensuregroup --dir "${source_path}/python/wheels" \
          ${source_path}/pythondeps.toml meson-rust || exit 1
   else
-    echo "Rust needs Meson 1.10.0, disabling" 2>&1
+    echo "Rust needs Meson 1.12.0, disabling" 2>&1
     rust=disabled
   fi
 fi
@@ -1291,12 +1290,12 @@ fi
 ##########################################
 # functions to probe cross compilers
 
-runc="no"
-if test $use_containers = "yes" && (has "docker" || has "podman"); then
-    runc=$($python "$source_path"/tests/docker/docker.py --engine "$container_engine" probe)
-    if test "$runc" != "no"; then
-        docker_py="$python $source_path/tests/docker/docker.py --engine $container_engine"
-    fi
+if test "$container_command" = ""; then
+    container_command=$($python "$source_path"/tests/docker/docker.py probe)
+    test "$container_command" = "no" && container_command=""
+fi
+if test $use_containers = "yes" && test "$container_command" != ""; then
+    docker_py="$python $source_path/tests/docker/docker.py --command $container_command"
 fi
 
 # cross compilers defaults, can be overridden with --cross-cc-ARCH
@@ -1415,7 +1414,7 @@ probe_target_compiler() {
   esac
 
   for host in $container_hosts; do
-    test "$runc" != no || continue
+    test "$container_command" != "" || continue
     test "$host" = "$cpu" || continue
     case $target_arch in
       # debian-all-test-cross architectures
@@ -1736,14 +1735,10 @@ echo all: >> $config_host_mak
 echo "SRC_PATH=$source_path" >> $config_host_mak
 echo "TARGET_DIRS=$target_list" >> $config_host_mak
 echo "GDB=$gdb_bin" >> $config_host_mak
-if test "$runc" != no; then
-    echo "RUNC=$runc" >> $config_host_mak
-    echo "CONTAINER_ENGINE=$container_engine" >> $config_host_mak
+if test "$container_command" != ""; then
+    echo "CONTAINER_COMMAND=$container_command" >> $config_host_mak
 fi
 echo "SUBDIRS=$subdirs" >> $config_host_mak
-if test "$rust" != disabled; then
-  echo "RUST_TARGET_TRIPLE=$rust_target_triple" >> $config_host_mak
-fi
 echo "PYTHON=$python" >> $config_host_mak
 echo "MKVENV_ENSUREGROUP=$mkvenv ensuregroup $mkvenv_online_flag" >> $config_host_mak
 echo "GENISOIMAGE=$genisoimage" >> $config_host_mak

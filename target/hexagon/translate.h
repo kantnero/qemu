@@ -40,6 +40,7 @@ typedef struct DisasContext {
     int reg_log_idx;
     DECLARE_BITMAP(regs_written, TOTAL_PER_THREAD_REGS);
     DECLARE_BITMAP(predicated_regs, TOTAL_PER_THREAD_REGS);
+    bool pkt_ends_tb;
     bool implicit_usr_write;
 #ifndef CONFIG_USER_ONLY
     int greg_log[GREG_WRITES_MAX];
@@ -75,10 +76,12 @@ typedef struct DisasContext {
     DECLARE_BITMAP(insn_qregs_read, NUM_QREGS);
     bool pre_commit;
     bool need_commit;
+    bool need_next_pc;
     TCGCond branch_cond;
     target_ulong branch_dest;
     bool is_tight_loop;
     bool short_circuit;
+    bool ieee_fp_extension;
     bool read_after_write;
     bool has_hvx_overlap;
     TCGv new_value[TOTAL_PER_THREAD_REGS];
@@ -94,7 +97,9 @@ bool is_gather_store_insn(DisasContext *ctx);
 #ifndef CONFIG_USER_ONLY
 static inline void ctx_log_greg_write(DisasContext *ctx, int rnum)
 {
-    assert(rnum <= HEX_GREG_G3);
+    if (rnum > HEX_GREG_G3) {
+        return;
+    }
     ctx->greg_log[ctx->greg_log_idx] = rnum;
     ctx->greg_log_idx++;
 }
@@ -310,6 +315,7 @@ extern TCGv hex_gpr[TOTAL_PER_THREAD_REGS];
 extern TCGv hex_pred[NUM_PREGS];
 extern TCGv hex_slot_cancelled;
 extern TCGv hex_new_value_usr;
+extern TCGv hex_next_PC;
 extern TCGv hex_store_addr[STORES_MAX];
 extern TCGv_i32 hex_store_width[STORES_MAX];
 extern TCGv hex_store_val32[STORES_MAX];
@@ -326,7 +332,7 @@ extern TCGv_i32 hex_t_sreg[NUM_SREGS];
 #endif
 
 
-void hex_gen_exception_end_tb(DisasContext *ctx, int excp);
+void hex_gen_exception_end_tb(DisasContext *ctx, int cause);
 
 void process_store(DisasContext *ctx, int slot_num);
 

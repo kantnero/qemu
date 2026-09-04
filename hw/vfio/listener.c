@@ -20,7 +20,6 @@
 
 #include "qemu/osdep.h"
 #include <sys/ioctl.h>
-#include <linux/kvm.h>
 #include <linux/vfio.h>
 
 #include "exec/target_page.h"
@@ -731,7 +730,7 @@ static void vfio_listener_region_del(MemoryListener *listener,
         }
 
         /*
-         * Fake an IOTLB entry for writable identity mapping which is needed
+         * Fake an IOTLB entry for writable RAM sections which is needed
          * by dirty tracking when switch out of PT domain. In fact, in
          * unmap_bitmap, only translated_addr field is used to set dirty
          * bitmap.
@@ -746,7 +745,8 @@ static void vfio_listener_region_del(MemoryListener *listener,
         if (global_dirty_tracking && memory_region_is_ram(section->mr) &&
             !section->readonly) {
             entry.iova = iova;
-            entry.translated_addr = iova;
+            entry.translated_addr = memory_region_get_ram_addr(section->mr) +
+                                    section->offset_within_region;
             iotlb = &entry;
         }
 

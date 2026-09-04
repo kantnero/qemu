@@ -151,6 +151,7 @@ struct Aspeed27x0SoCState {
     AspeedINTCState intcioexp[ASPEED_IOEXP_NUM];
     GICv3State gic;
     MemoryRegion dram_empty;
+    Aspeed2700SCUState scu;
 };
 
 #define TYPE_ASPEED27X0_SOC "aspeed27x0-soc"
@@ -295,6 +296,9 @@ enum {
     ASPEED_DEV_IOEXP1_INTCIO,
     ASPEED_DEV_IOEXP0_I3C,
     ASPEED_DEV_IOEXP1_I3C,
+    ASPEED_DEV_PRIC0,
+    ASPEED_DEV_PRIC1,
+    ASPEED_DEV_OTP,
 };
 
 const char *aspeed_soc_cpu_type(const char * const *valid_cpu_types);

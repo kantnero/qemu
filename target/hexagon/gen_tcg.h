@@ -414,7 +414,7 @@
 
 #define fGEN_TCG_STORE(SHORTCODE) \
     do { \
-        TCGv HALF G_GNUC_UNUSED = tcg_temp_new(); \
+        TCGv tmp_half G_GNUC_UNUSED = tcg_temp_new(); \
         TCGv BYTE G_GNUC_UNUSED = tcg_temp_new(); \
         SHORTCODE; \
     } while (0)
@@ -422,7 +422,7 @@
 #define fGEN_TCG_STORE_pcr(SHIFT, STORE) \
     do { \
         TCGv ireg = tcg_temp_new(); \
-        TCGv HALF G_GNUC_UNUSED = tcg_temp_new(); \
+        TCGv tmp_half G_GNUC_UNUSED = tcg_temp_new(); \
         TCGv BYTE G_GNUC_UNUSED = tcg_temp_new(); \
         tcg_gen_mov_tl(EA, RxV); \
         gen_read_ireg(ireg, MuV, SHIFT); \
@@ -497,8 +497,17 @@
     do { RsV = RsV; } while (0)
 #define fGEN_TCG_Y2_dccleana(SHORTCODE) \
     do { RsV = RsV; } while (0)
+
+#ifdef CONFIG_USER_ONLY
+#define fGEN_TCG_Y2_icinva(SHORTCODE) \
+    gen_helper_insn_cache_op(tcg_env, RsV, \
+                             tcg_constant_tl(insn->slot), \
+                             tcg_constant_tl(ctx->mem_idx), \
+                             tcg_constant_tl(ctx->pkt.pc))
+#else
 #define fGEN_TCG_Y2_icinva(SHORTCODE) \
     do { RsV = RsV; } while (0)
+#endif
 
 /*
  * allocframe(#uiV)

@@ -75,6 +75,7 @@ if have_block
     'test-blockjob': [testblock],
     'test-blockjob-txn': [testblock],
     'test-block-backend': [testblock],
+    'test-block-accounting': [testblock],
     'test-block-iothread': [testblock],
     'test-write-threshold': [testblock],
     'test-crypto-hash': [crypto],
@@ -183,6 +184,12 @@ slow_tests = {
   'test-crypto-tlscredsx509': 90,
   'test-crypto-tlssession': 90,
   'test-replication': 60,
+  'rcutorture': 30,
+  'test-rcu-list': 30,
+  'test-rcu-simpleq': 30,
+  'test-rcu-tailq': 30,
+  'test-rcu-slist': 30,
+  'test-thread-pool': 30,
 }
 
 foreach test_name, extra: tests
@@ -204,5 +211,6 @@ foreach test_name, extra: tests
        protocol: 'tap',
        timeout: slow_tests.get(test_name, 30),
        priority: slow_tests.get(test_name, 30),
-       suite: ['unit'])
+       suite: ['unit'] +
+              (slow_tests.has_key(test_name) ? ['slow'] : []))
 endforeach

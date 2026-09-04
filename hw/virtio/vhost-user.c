@@ -946,6 +946,9 @@ static int vhost_user_add_remove_regions(struct vhost_dev *dev,
 
     msg->hdr.size = sizeof(msg->payload.mem_reg);
 
+    /* Ensure nregions fits the fixed-size arrays used below. */
+    assert(dev->mem->nregions <= VHOST_USER_MAX_RAM_SLOTS);
+
     /* Find the regions which need to be removed or added. */
     scrub_shadow_regions(dev, add_reg, &nr_add_reg, rem_reg, &nr_rem_reg,
                          shadow_pcb, track_ramblocks);
@@ -1487,7 +1490,29 @@ static int vhost_set_vring_file(struct vhost_dev *dev,
 static int vhost_user_set_vring_kick(struct vhost_dev *dev,
                                      struct vhost_vring_file *file)
 {
-    return vhost_set_vring_file(dev, VHOST_USER_SET_VRING_KICK, file);
+    int ret = vhost_set_vring_file(dev, VHOST_USER_SET_VRING_KICK, file);
+    if (ret < 0) {
+        return ret;
+    }
+
+    /*
+     * Inject a kick in case the back-end only starts vring processing upon
+     * receiving a kick. The spec suggests this to improve compatibility.
+     */
+    if (file->fd != -1) {
+        uint64_t val = 1;
+        ssize_t nwritten;
+
+        do {
+            nwritten = write(file->fd, &val, sizeof(val));
+        } while (nwritten < 0 && errno == EINTR);
+
+        if (nwritten < 0 && errno != EAGAIN /* back-end can already read */) {
+            return -errno;
+        }
+    }
+
+    return 0;
 }
 
 static int vhost_user_set_vring_call(struct vhost_dev *dev,

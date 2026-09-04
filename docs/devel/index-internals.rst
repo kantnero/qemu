@@ -15,11 +15,13 @@ Details about QEMU's various subsystems including how to add features to them.
    clocks
    ebpf_rss
    hexagon-sys
+   hexagon-l2vic
    migration/index
    multi-process
    reset
    s390-cpu-topology
    s390-dasd-ipl
+   ssi
    tracing
    uefi-vars
    vfio-iommufd

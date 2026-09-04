@@ -270,7 +270,7 @@ static void qxl_spice_monitors_config_async(PCIQXLDevice *qxl, int replay)
     }
 
     cfg = qxl_phys2virt(qxl, qxl->guest_monitors_config, MEMSLOT_GROUP_GUEST,
-                        sizeof(QXLMonitorsConfig));
+                        sizeof(QXLMonitorsConfig) + sizeof(QXLHead));
     if (cfg != NULL && cfg->count == 1) {
         qxl->guest_primary.resized = 1;
         qxl->guest_head0_width  = cfg->heads[0].width;
@@ -1489,6 +1489,47 @@ static void qxl_create_guest_primary_complete(PCIQXLDevice *qxl)
     qxl_render_resize(qxl);
 }
 
+/*
+ * Convert a SpiceSurfaceFormat to bytes per pixel and bits per pixel.
+ *
+ * Only valid for surface suitable for rendering.
+ */
+bool qxl_format_bpp(PCIQXLDevice *qxl, SpiceSurfaceFmt format,
+                    uint32_t *bytes_pp, uint32_t *bits_pp)
+{
+    uint32_t bypp = 4;
+    uint32_t bipp = 32;
+    bool ret = true;
+
+    switch (format) {
+    case SPICE_SURFACE_FMT_16_555:
+        bypp = 2;
+        bipp = 15;
+        break;
+    case SPICE_SURFACE_FMT_16_565:
+        bypp = 2;
+        bipp = 16;
+        break;
+    case SPICE_SURFACE_FMT_32_xRGB:
+    case SPICE_SURFACE_FMT_32_ARGB:
+        bypp = 4;
+        bipp = 32;
+        break;
+    default:
+        ret = false;
+        qxl_set_guest_bug(qxl, "%s: unhandled format: %x", __func__, format);
+    }
+
+    if (bytes_pp != NULL) {
+        *bytes_pp = bypp;
+    }
+    if (bits_pp != NULL) {
+        *bits_pp = bipp;
+    }
+
+    return ret;
+}
+
 static void qxl_create_guest_primary(PCIQXLDevice *qxl, int loadvm,
                                      qxl_async_io async)
 {
@@ -1496,6 +1537,7 @@ static void qxl_create_guest_primary(PCIQXLDevice *qxl, int loadvm,
     QXLSurfaceCreate *sc = &qxl->guest_primary.surface;
     uint32_t requested_height = le32_to_cpu(sc->height);
     int requested_stride = le32_to_cpu(sc->stride);
+    uint32_t bytes_pp;
 
     if (requested_stride == INT32_MIN ||
         abs(requested_stride) * (uint64_t)requested_height
@@ -1529,6 +1571,23 @@ static void qxl_create_guest_primary(PCIQXLDevice *qxl, int loadvm,
     if ((surface.stride & 0x3) != 0) {
         qxl_set_guest_bug(qxl, "primary surface stride = %d %% 4 != 0",
                           surface.stride);
+        return;
+    }
+
+    if (!qxl_format_bpp(qxl, surface.format, &bytes_pp, NULL)) {
+        return;
+    }
+
+    if (surface.width == 0 || surface.height == 0) {
+        qxl_set_guest_bug(qxl, "%s: zero dimension %ux%u",
+                          __func__, surface.width, surface.height);
+        return;
+    }
+
+    if ((uint64_t)surface.width * bytes_pp > abs(surface.stride)) {
+        qxl_set_guest_bug(qxl, "%s: stride too small for width:"
+                          " stride %d width %u bpp %u",
+                          __func__, surface.stride, surface.width, bytes_pp);
         return;
     }
 
@@ -2203,7 +2262,8 @@ static void qxl_realize_common(PCIQXLDevice *qxl, Error **errp)
         error_report_err(err);
     }
 
-    qemu_add_vm_change_state_handler(qxl_vm_change_state_handler, qxl);
+    qxl->vmstate_handler =
+        qemu_add_vm_change_state_handler(qxl_vm_change_state_handler, qxl);
 
     qxl->update_irq = qemu_bh_new_guarded(qxl_update_irq_bh, qxl,
                                           &DEVICE(qxl)->mem_reentrancy_guard);
@@ -2475,6 +2535,18 @@ static const Property qxl_properties[] = {
         DEFINE_PROP_UINT32("yres", PCIQXLDevice, yres, 0),
 };
 
+static void qxl_exit(PCIDevice *dev)
+{
+    PCIQXLDevice *qxl = PCI_QXL(dev);
+
+    /* TODO: complete cleanup, error paths etc */
+    g_clear_pointer(&qxl->vmstate_handler, qemu_del_vm_change_state_handler);
+    g_clear_pointer(&qxl->update_irq, qemu_bh_delete);
+    g_clear_pointer(&qxl->update_area_bh, qemu_bh_delete);
+    g_clear_pointer(&qxl->ssd.cursor_bh, qemu_bh_delete);
+    g_clear_pointer(&qxl->guest_surfaces.cmds, g_free);
+}
+
 static void qxl_pci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -2482,6 +2554,7 @@ static void qxl_pci_class_init(ObjectClass *klass, const void *data)
 
     k->vendor_id = REDHAT_PCI_VENDOR_ID;
     k->device_id = QXL_DEVICE_ID_STABLE;
+    k->exit = qxl_exit;
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     device_class_set_legacy_reset(dc, qxl_reset_handler);
     dc->vmsd = &qxl_vmstate;

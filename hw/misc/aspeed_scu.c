@@ -160,6 +160,11 @@
 #define AST2700_SCU_CPU_SCRATCH_1   TO_REG(0x784)
 #define AST2700_SCU_VGA_SCRATCH_0   TO_REG(0x900)
 
+#define AST2700_SCUIO_RNG_CTRL          TO_REG(0xF0)
+#define AST2700_SCUIO_RNG_CTRL_MASK     0x2F
+#define AST2700_SCUIO_RNG_CTRL_DIS      BIT(0)
+#define AST2700_SCUIO_RNG_CTRL_VLD      BIT(31)
+#define AST2700_SCUIO_RNG_DATA          TO_REG(0xF4)
 #define AST2700_SCUIO_CLK_STOP_CTL_1    TO_REG(0x240)
 #define AST2700_SCUIO_CLK_STOP_CLR_1    TO_REG(0x244)
 #define AST2700_SCUIO_CLK_STOP_CTL_2    TO_REG(0x260)
@@ -849,13 +854,6 @@ static uint64_t aspeed_ast2700_scu_read(void *opaque, hwaddr offset,
         return 0;
     }
 
-    switch (reg) {
-    default:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Unhandled read at offset 0x%" HWADDR_PRIx "\n",
-                      __func__, offset);
-    }
-
     trace_aspeed_ast2700_scu_read(offset, size, s->regs[reg]);
     return s->regs[reg];
 }
@@ -932,6 +930,11 @@ static void aspeed_ast2700_scu_reset_hold(Object *obj, ResetType type)
     s->regs[AST2700_HW_STRAP1] = s->hw_strap1;
 }
 
+static void aspeed_2700_scu_realize(DeviceState *dev, Error **errp)
+{
+    aspeed_scu_realize(dev, errp);
+}
+
 static void aspeed_2700_scu_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -939,6 +942,7 @@ static void aspeed_2700_scu_class_init(ObjectClass *klass, const void *data)
     AspeedSCUClass *asc = ASPEED_SCU_CLASS(klass);
 
     dc->desc = "ASPEED 2700 System Control Unit";
+    dc->realize = aspeed_2700_scu_realize;
     rc->phases.hold = aspeed_ast2700_scu_reset_hold;
     asc->resets = ast2700_a0_resets;
     asc->calc_hpll = aspeed_2600_scu_calc_hpll;
@@ -962,10 +966,11 @@ static uint64_t aspeed_ast2700_scuio_read(void *opaque, hwaddr offset,
     }
 
     switch (reg) {
-    default:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: Unhandled read at offset 0x%" HWADDR_PRIx "\n",
-                      __func__, offset);
+    case AST2700_SCUIO_RNG_DATA:
+        if (!(s->regs[AST2700_SCUIO_RNG_CTRL] & AST2700_SCUIO_RNG_CTRL_DIS)) {
+            s->regs[AST2700_SCUIO_RNG_DATA] = aspeed_scu_get_random();
+        }
+        break;
     }
 
     trace_aspeed_ast2700_scuio_read(offset, size, s->regs[reg]);
@@ -991,6 +996,18 @@ static void aspeed_ast2700_scuio_write(void *opaque, hwaddr offset,
     trace_aspeed_ast2700_scuio_write(offset, size, data);
 
     switch (reg) {
+    case AST2700_SCUIO_RNG_CTRL:
+        data &= AST2700_SCUIO_RNG_CTRL_MASK;
+        if (data & AST2700_SCUIO_RNG_CTRL_DIS) {
+            data &= ~AST2700_SCUIO_RNG_CTRL_VLD;
+            s->regs[AST2700_SCUIO_RNG_DATA] = 0;
+        } else {
+            s->regs[AST2700_SCUIO_RNG_DATA] = aspeed_scu_get_random();
+            data |= AST2700_SCUIO_RNG_CTRL_VLD;
+        }
+        s->regs[reg] = data;
+        updated = true;
+        break;
     case AST2700_SCUIO_CLK_STOP_CTL_1:
     case AST2700_SCUIO_CLK_STOP_CTL_2:
         s->regs[reg] |= data;
@@ -1052,6 +1069,16 @@ static const uint32_t ast2700_a0_resets_io[ASPEED_AST2700_SCU_NR_REGS] = {
     [AST2700_SCUIO_FREQ_CNT_CTL]        = 0x00000080,
 };
 
+static void aspeed_ast2700_scuio_reset_hold(Object *obj, ResetType type)
+{
+    AspeedSCUState *s = ASPEED_SCU(obj);
+    AspeedSCUClass *asc = ASPEED_SCU_GET_CLASS(obj);
+
+    memcpy(s->regs, asc->resets, asc->nr_regs * 4);
+    s->regs[AST2700_SILICON_REV] = s->silicon_rev;
+    s->regs[AST2700_HW_STRAP1] = s->hw_strap1;
+}
+
 static void aspeed_2700_scuio_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1059,7 +1086,7 @@ static void aspeed_2700_scuio_class_init(ObjectClass *klass, const void *data)
     AspeedSCUClass *asc = ASPEED_SCU_CLASS(klass);
 
     dc->desc = "ASPEED 2700 System Control Unit I/O";
-    rc->phases.hold = aspeed_ast2700_scu_reset_hold;
+    rc->phases.hold = aspeed_ast2700_scuio_reset_hold;
     asc->resets = ast2700_a0_resets_io;
     asc->calc_hpll = aspeed_2600_scu_calc_hpll;
     asc->get_apb = aspeed_2700_scuio_get_apb_freq;
@@ -1150,7 +1177,7 @@ static const TypeInfo aspeed_scu_types[] = {
     {
         .name = TYPE_ASPEED_2700_SCU,
         .parent = TYPE_ASPEED_SCU,
-        .instance_size = sizeof(AspeedSCUState),
+        .instance_size = sizeof(Aspeed2700SCUState),
         .class_init = aspeed_2700_scu_class_init,
     },
     {

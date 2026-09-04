@@ -199,7 +199,7 @@ static int has_defaults = 1;
 static int default_audio = 1;
 static int default_serial = 1;
 static int default_parallel = 1;
-static int default_monitor = 1;
+static int default_monitor = IS_ENABLED(CONFIG_HMP);
 static int default_floppy = 1;
 static int default_cdrom = 1;
 static bool auto_create_sdcard = true;
@@ -1247,12 +1247,11 @@ static int fsdev_init_func(void *opaque, QemuOpts *opts, Error **errp)
 
 static int mon_init_func(void *opaque, QemuOpts *opts, Error **errp)
 {
-    return monitor_init_opts(opts, errp);
+    return monitor_new_opts(opts, errp);
 }
 
 static void monitor_parse(const char *str, const char *mode, bool pretty)
 {
-    static int monitor_device_index = 0;
     QemuOpts *opts;
     const char *p;
     char label[32];
@@ -1260,8 +1259,9 @@ static void monitor_parse(const char *str, const char *mode, bool pretty)
     if (strstart(str, "chardev:", &p)) {
         snprintf(label, sizeof(label), "%s", p);
     } else {
-        snprintf(label, sizeof(label), "compat_monitor%d",
-                 monitor_device_index);
+        g_autofree char *id = monitor_compat_id();
+        assert(strlen(id) < sizeof(label));
+        memcpy(label, id, strlen(id) + 1);
         opts = qemu_chr_parse_compat(label, str, true);
         if (!opts) {
             error_report("parse error: %s", str);
@@ -1277,7 +1277,6 @@ static void monitor_parse(const char *str, const char *mode, bool pretty)
     } else {
         assert(pretty == false);
     }
-    monitor_device_index++;
 }
 
 struct device_config {
@@ -1571,7 +1570,7 @@ static void machine_help_func(const QDict *qdict)
     GSList *el;
     const char *type = qdict_get_try_str(qdict, "type");
 
-    machines = object_class_get_list(target_machine_typename(), false);
+    machines = object_class_get_list(TYPE_MACHINE, false);
     if (type) {
         ObjectClass *machine_class = OBJECT_CLASS(find_machine(type, machines));
         if (machine_class) {
@@ -1683,8 +1682,7 @@ static MachineClass *select_machine(QDict *qdict, Error **errp)
 {
     ERRP_GUARD();
     const char *machine_type = qdict_get_try_str(qdict, "type");
-    g_autoptr(GSList) machines = object_class_get_list(target_machine_typename(),
-                                                       false);
+    g_autoptr(GSList) machines = object_class_get_list(TYPE_MACHINE, false);
     MachineClass *machine_class = NULL;
 
     if (machine_type) {
@@ -1830,6 +1828,10 @@ static void object_option_add_visitor(Visitor *v)
 {
     ObjectOption *opt = g_new0(ObjectOption, 1);
     visit_type_ObjectOptions(v, NULL, &opt->opts, &error_fatal);
+    if (opt->opts->qom_type == OBJECT_TYPE_MONITOR_HMP ||
+        opt->opts->qom_type == OBJECT_TYPE_MONITOR_QMP) {
+        default_monitor = 0;
+    }
     QTAILQ_INSERT_TAIL(&object_opts, opt, next);
 }
 
@@ -1971,7 +1973,9 @@ static bool object_create_early(const char *type)
 
     /* Reason: property "chardev" */
     if (g_str_equal(type, "rng-egd") ||
-        g_str_equal(type, "qtest")) {
+        g_str_equal(type, "qtest") ||
+        g_str_equal(type, "monitor-hmp") ||
+        g_str_equal(type, "monitor-qmp")) {
         return false;
     }
 
@@ -3221,7 +3225,7 @@ void qemu_init(int argc, char **argv)
                 }
             case QEMU_OPTION_monitor:
                 default_monitor = 0;
-                if (strncmp(optarg, "none", 4)) {
+                if (g_strcmp0(optarg, "none")) {
                     monitor_parse(optarg, "readline", false);
                 }
                 break;
@@ -3234,6 +3238,13 @@ void qemu_init(int argc, char **argv)
                 default_monitor = 0;
                 break;
             case QEMU_OPTION_mon:
+                warn_report_once(
+                    "'-mon' is deprecated. Switch to either "
+                    "'-object monitor-hmp,id=ID,chardev=CHR-ID' or "
+                    "'-object monitor-qmp,id=ID,chardev=CHR-ID' instead. "
+                    "See '-object' docs in the QEMU manual for further "
+                    "configuration guidance: "
+                    "https://www.qemu.org/docs/master/system/invocation.html");
                 if (!qemu_opts_parse_noisily(qemu_find_opts("mon"), optarg,
                                              true)) {
                     exit(1);
